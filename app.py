@@ -1,213 +1,94 @@
 import streamlit as st
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
 import time
-import re
-from random import uniform
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
-# ------------------- Page configuration -------------------
-st.set_page_config(page_title="SG Job Automator: Engineering", layout="wide")
+# --- Page configuration ---
+st.set_page_config(page_title="SG Engineering Job Automator", layout="wide")
 
 st.title("🛠️ Senior Engineer Job Search Automator")
-st.subheader("Targeting: ELV, Healthcare Infrastructure & Statutory Compliance")
+st.subheader("Direct API Access: ELV, Healthcare & Infrastructure")
 
-# ------------------- Sidebar inputs -------------------
+# --- Sidebar: API Credentials ---
+# You can get these for free at developer.adzuna.com
+st.sidebar.header("API Configuration")
+ADZUNA_APP_ID = st.sidebar.text_input("Adzuna App ID", type="password")
+ADZUNA_APP_KEY = st.sidebar.text_input("Adzuna App Key", type="password")
+
+# --- Sidebar: Search Filters ---
 keywords = st.sidebar.text_input("Keywords", "Senior Engineer ELV Hospital")
 location = st.sidebar.text_input("Location", "Singapore")
-pages = st.sidebar.slider("Pages to Scan", 1, 5, 2)
+results_count = st.sidebar.slider("Number of results", 10, 50, 20)
 
-portal = st.sidebar.selectbox("Job Portal", ["Indeed", "JobStreet"])
+# Salary Filter (Adzuna handles this natively in the API)
+min_salary = st.sidebar.number_input("Min Monthly Salary (SGD)", value=8000)
 
-enable_salary_filter = st.sidebar.checkbox("Filter by salary (8k–10k SGD/month)", value=True)
-if enable_salary_filter:
-    salary_min = st.sidebar.number_input("Min monthly salary (SGD)", min_value=0, value=8000, step=500)
-    salary_max = st.sidebar.number_input("Max monthly salary (SGD)", min_value=0, value=10000, step=500)
-else:
-    salary_min, salary_max = 0, 1_000_000  # no effective filter
-
-# ------------------- Helper functions -------------------
-def parse_salary(text):
-    """
-    Extract monthly salary range from text.
-    Returns (min_salary, max_salary) in SGD per month, or (None, None) if not found.
-    """
-    if not text:
-        return None, None
-    text = text.replace(',', '').lower()
-    # Match patterns like $5,000, $6k, $5000 - $6000, $60k - $72k per year
-    numbers = re.findall(r'\$?(\d+(?:\.\d+)?)\s*(k)?', text)
-    if not numbers:
-        return None, None
-
-    # Convert to numbers, handling 'k' suffix
-    values = []
-    for num, k in numbers:
-        val = float(num)
-        if k:
-            val *= 1000
-        values.append(val)
-
-    # Determine if annual (keywords present)
-    if 'year' in text or 'annual' in text or 'per annum' in text:
-        values = [v / 12 for v in values]
-
-    min_sal = min(values)
-    max_sal = max(values)
-    return round(min_sal), round(max_sal)
-
-def create_session():
-    """Create a requests session with retry strategy and browser-like headers."""
-    session = requests.Session()
-    retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
-    session.mount('https://', HTTPAdapter(max_retries=retries))
-
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'DNT': '1',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'Cache-Control': 'max-age=0',
-    })
-    return session
-
-def fetch_indeed(session, keyword, loc, pg):
-    """Scrape Indeed job listings with salary extraction."""
-    job_list = []
-    base_url = "https://sg.indeed.com/jobs"
-    for start in range(0, pg * 10, 10):
-        params = {'q': keyword, 'l': loc, 'start': start}
-        try:
-            resp = session.get(base_url, params=params, timeout=15)
-            if resp.status_code != 200:
-                st.warning(f"Indeed returned HTTP {resp.status_code} – skipping page")
-                continue
-        except Exception as e:
-            st.warning(f"Request error: {e}")
-            continue
-
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        jobs = soup.find_all('div', class_='job_seen_beacon')
-        for job in jobs:
-            title_elem = job.find('h2')
-            if not title_elem:
-                continue
-            title = title_elem.text.strip()
-            if 'junior' in title.lower():
-                continue
-
-            company_elem = job.find('span', {'data-testid': 'company-name'})
-            company = company_elem.text.strip() if company_elem else 'N/A'
-
-            link_elem = job.find('a')
-            link = 'https://sg.indeed.com' + link_elem['href'] if link_elem and link_elem.get('href') else '#'
-
-            # Salary extraction
-            salary_elem = job.find('div', {'data-testid': 'attribute_snippet_testid'}) or \
-                          job.find('div', class_='salary-snippet')
-            salary_text = salary_elem.text.strip() if salary_elem else None
-            min_sal, max_sal = parse_salary(salary_text)
-
-            if enable_salary_filter:
-                if min_sal and max_sal:
-                    if max_sal < salary_min or min_sal > salary_max:
-                        continue
-                else:
-                    continue  # skip jobs without salary info (optional)
-
-            job_list.append({
-                'Title': title,
-                'Company': company,
-                'Salary (SGD/month)': f'{min_sal}–{max_sal}' if min_sal and max_sal else 'Not shown',
-                'Link': link
-            })
-
-        time.sleep(uniform(3, 5))  # random delay between pages
-    return job_list
-
-def fetch_jobstreet(session, keyword, loc, pg):
-    """Scrape JobStreet Singapore job listings with salary extraction."""
-    job_list = []
-    base_url = "https://www.jobstreet.com.sg/en/job-search/"
-    for page in range(1, pg + 1):
-        params = {'keywords': keyword, 'location': loc, 'page': page}
-        try:
-            resp = session.get(base_url, params=params, timeout=15)
-            if resp.status_code != 200:
-                st.warning(f"JobStreet returned HTTP {resp.status_code}")
-                continue
-        except Exception as e:
-            st.warning(f"JobStreet error: {e}")
-            continue
-
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        # JobStreet job cards – this selector may need updating if the site changes
-        jobs = soup.find_all('article', {'data-automation': 'normalJob'})
-        for job in jobs:
-            title_elem = job.find('a', {'data-automation': 'jobTitle'})
-            if not title_elem:
-                continue
-            title = title_elem.text.strip()
-            if 'junior' in title.lower():
-                continue
-
-            company_elem = job.find('a', {'data-automation': 'jobCompany'})
-            company = company_elem.text.strip() if company_elem else 'N/A'
-
-            link = title_elem.get('href')
-            if link and not link.startswith('http'):
-                link = 'https://www.jobstreet.com.sg' + link
-
-            # Salary snippet
-            salary_elem = job.find('span', {'data-automation': 'jobSalary'})
-            salary_text = salary_elem.text.strip() if salary_elem else None
-            min_sal, max_sal = parse_salary(salary_text)
-
-            if enable_salary_filter:
-                if min_sal and max_sal:
-                    if max_sal < salary_min or min_sal > salary_max:
-                        continue
-                else:
+# --- The Logic ---
+def fetch_jobs_adzuna(app_id, app_key, query, loc, count, salary):
+    # Adzuna uses annual salary, so we convert your monthly input
+    annual_min = salary * 12
+    
+    # Adzuna API Endpoint for Singapore (sg)
+    url = f"https://api.adzuna.com/v1/api/jobs/sg/search/1"
+    params = {
+        'app_id': app_id,
+        'app_key': app_key,
+        'results_per_page': count,
+        'what': query,
+        'where': loc,
+        'salary_min': annual_min,
+        'content-type': 'application/json'
+    }
+    
+    try:
+        response = requests.get(url, params=params)
+        if response.status_code == 200:
+            data = response.json()
+            jobs = []
+            for item in data.get('results', []):
+                # Senior Engineer Logic: Skip anything with "Junior" in title
+                if "junior" in item.get('title', '').lower():
                     continue
-
-            job_list.append({
-                'Title': title,
-                'Company': company,
-                'Salary (SGD/month)': f'{min_sal}–{max_sal}' if min_sal and max_sal else 'Not shown',
-                'Link': link
-            })
-
-        time.sleep(uniform(2, 4))
-    return job_list
-
-# ------------------- Main execution -------------------
-if st.button("Run Automation"):
-    session = create_session()
-    with st.spinner(f'Scanning {portal} for high-value matches...'):
-        if portal == 'Indeed':
-            results = fetch_indeed(session, keywords, location, pages)
+                
+                jobs.append({
+                    "Title": item.get('title'),
+                    "Company": item.get('company', {}).get('display_name'),
+                    "Location": item.get('location', {}).get('display_name'),
+                    "Monthly Salary (Est)": round(item.get('salary_min', 0) / 12) if item.get('salary_min') else "N/A",
+                    "Source": item.get('redirect_url').split('/')[2], # Shows the original site
+                    "Link": item.get('redirect_url')
+                })
+            return jobs
         else:
-            results = fetch_jobstreet(session, keywords, location, pages)
+            st.error(f"API Error: {response.status_code}. Check your credentials.")
+            return []
+    except Exception as e:
+        st.error(f"Connection Error: {e}")
+        return []
 
-        if results:
-            df = pd.DataFrame(results)
-            st.success(f"Found {len(df)} matching roles!")
-            st.dataframe(df, use_container_width=True)
-            csv = df.to_csv(index=False).encode('utf-8')
-            st.download_button("Download Job Tracker (CSV)", csv, "jobs.csv", "text/csv")
-        else:
-            st.error("No jobs found. Possible reasons:\n"
-                     "- Blocked by the site (try JobStreet or use a VPN)\n"
-                     "- No jobs match your salary filter\n"
-                     "- The site’s HTML structure changed – update selectors")
+# --- Execution ---
+if st.button("Run Engineering Scan"):
+    if not ADZUNA_APP_ID or not ADZUNA_APP_KEY:
+        st.warning("Please enter your Adzuna API credentials in the sidebar.")
+    else:
+        with st.spinner('Accessing SG Job Aggregator...'):
+            results = fetch_jobs_adzuna(ADZUNA_APP_ID, ADZUNA_APP_KEY, keywords, location, results_count, min_salary)
+            
+            if results:
+                df = pd.DataFrame(results)
+                st.success(f"Found {len(df)} Senior-level matches!")
+                
+                # Make links clickable
+                st.dataframe(
+                    df, 
+                    column_config={"Link": st.column_config.LinkColumn("Apply Link")},
+                    use_container_width=True
+                )
+                
+                csv = df.to_csv(index=False).encode('utf-8')
+                st.download_button("Download CSV Tracker", csv, "sg_engineering_jobs.csv", "text/csv")
+            else:
+                st.info("No jobs found matching those exact criteria. Try broadening your keywords.")
 
-st.info("⚠️ Indeed has strong anti‑scraping measures. If you keep getting 401, try JobStreet or consider using official job search tools like Indeed's Career Scout.")
+st.divider()
+st.info("💡 **Why use an API?** Scraping Indeed directly often triggers 'Bot Detection'. This API version is stable, legal, and pulls data from multiple sites (Indeed, JobStreet, etc.) at once.")
