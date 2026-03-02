@@ -8,30 +8,32 @@ from random import uniform
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+# ------------------- Page configuration -------------------
 st.set_page_config(page_title="SG Job Automator: Engineering", layout="wide")
 
 st.title("🛠️ Senior Engineer Job Search Automator")
 st.subheader("Targeting: ELV, Healthcare Infrastructure & Statutory Compliance")
 
-# Sidebar inputs
+# ------------------- Sidebar inputs -------------------
 keywords = st.sidebar.text_input("Keywords", "Senior Engineer ELV Hospital")
 location = st.sidebar.text_input("Location", "Singapore")
 pages = st.sidebar.slider("Pages to Scan", 1, 5, 2)
 
-# Job portal choice
 portal = st.sidebar.selectbox("Job Portal", ["Indeed", "JobStreet"])
 
-# Salary filter
 enable_salary_filter = st.sidebar.checkbox("Filter by salary (8k–10k SGD/month)", value=True)
 if enable_salary_filter:
     salary_min = st.sidebar.number_input("Min monthly salary (SGD)", min_value=0, value=8000, step=500)
     salary_max = st.sidebar.number_input("Max monthly salary (SGD)", min_value=0, value=10000, step=500)
 else:
-    salary_min, salary_max = 0, 1_000_000
+    salary_min, salary_max = 0, 1_000_000  # no effective filter
 
-# --- Helper functions ---
+# ------------------- Helper functions -------------------
 def parse_salary(text):
-    """Extract monthly salary range from text."""
+    """
+    Extract monthly salary range from text.
+    Returns (min_salary, max_salary) in SGD per month, or (None, None) if not found.
+    """
     if not text:
         return None, None
     text = text.replace(',', '').lower()
@@ -79,14 +81,11 @@ def create_session():
     return session
 
 def fetch_indeed(session, keyword, loc, pg):
+    """Scrape Indeed job listings with salary extraction."""
     job_list = []
     base_url = "https://sg.indeed.com/jobs"
     for start in range(0, pg * 10, 10):
-        params = {
-            'q': keyword,
-            'l': loc,
-            'start': start
-        }
+        params = {'q': keyword, 'l': loc, 'start': start}
         try:
             resp = session.get(base_url, params=params, timeout=15)
             if resp.status_code != 200:
@@ -112,7 +111,7 @@ def fetch_indeed(session, keyword, loc, pg):
             link_elem = job.find('a')
             link = 'https://sg.indeed.com' + link_elem['href'] if link_elem and link_elem.get('href') else '#'
 
-            # Salary
+            # Salary extraction
             salary_elem = job.find('div', {'data-testid': 'attribute_snippet_testid'}) or \
                           job.find('div', class_='salary-snippet')
             salary_text = salary_elem.text.strip() if salary_elem else None
@@ -132,20 +131,15 @@ def fetch_indeed(session, keyword, loc, pg):
                 'Link': link
             })
 
-        time.sleep(uniform(3, 5))  # random delay
+        time.sleep(uniform(3, 5))  # random delay between pages
     return job_list
 
 def fetch_jobstreet(session, keyword, loc, pg):
-    # JobStreet SG search URL structure
+    """Scrape JobStreet Singapore job listings with salary extraction."""
     job_list = []
     base_url = "https://www.jobstreet.com.sg/en/job-search/"
-    # They use 'keywords' and 'location' params
     for page in range(1, pg + 1):
-        params = {
-            'keywords': keyword,
-            'location': loc,
-            'page': page
-        }
+        params = {'keywords': keyword, 'location': loc, 'page': page}
         try:
             resp = session.get(base_url, params=params, timeout=15)
             if resp.status_code != 200:
@@ -156,7 +150,7 @@ def fetch_jobstreet(session, keyword, loc, pg):
             continue
 
         soup = BeautifulSoup(resp.text, 'html.parser')
-        # JobStreet cards – this may change; inspect actual classes
+        # JobStreet job cards – this selector may need updating if the site changes
         jobs = soup.find_all('article', {'data-automation': 'normalJob'})
         for job in jobs:
             title_elem = job.find('a', {'data-automation': 'jobTitle'})
@@ -195,7 +189,7 @@ def fetch_jobstreet(session, keyword, loc, pg):
         time.sleep(uniform(2, 4))
     return job_list
 
-# --- Main ---
+# ------------------- Main execution -------------------
 if st.button("Run Automation"):
     session = create_session()
     with st.spinner(f'Scanning {portal} for high-value matches...'):
@@ -216,4 +210,4 @@ if st.button("Run Automation"):
                      "- No jobs match your salary filter\n"
                      "- The site’s HTML structure changed – update selectors")
 
-st.info("⚠️ Indeed has strong anti‑scraping measures. If you keep getting 401, try JobStreet or use the site’s own search.")
+st.info("⚠️ Indeed has strong anti‑scraping measures. If you keep getting 401, try JobStreet or consider using official job search tools like Indeed's Career Scout.")
